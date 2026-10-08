@@ -1,0 +1,140 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null
+        && exists(
+          /databases/$(database)/documents/usuarios/$(request.auth.uid)
+        )
+        && get(
+          /databases/$(database)/documents/usuarios/$(request.auth.uid)
+        ).data.rol == 'admin';
+    }
+
+    match /usuarios/{userId} {
+      allow get: if request.auth != null
+        && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly([
+          'username',
+          'email',
+          'fecha_registro',
+          'telefono'
+        ])
+        && request.resource.data.username is string
+        && request.resource.data.username.size() >= 2
+        && request.resource.data.username.size() <= 40
+        && request.resource.data.email is string
+        && request.resource.data.fecha_registro == request.time
+        && (!request.resource.data.keys().hasAny(['telefono'])
+          || (request.resource.data.telefono is string
+            && request.resource.data.telefono.size() >= 7
+            && request.resource.data.telefono.size() <= 20));
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly(['telefono'])
+        && request.resource.data.keys().hasOnly([
+          'username',
+          'email',
+          'fecha_registro',
+          'telefono'
+        ])
+        && (!request.resource.data.keys().hasAny(['telefono'])
+          || (request.resource.data.telefono is string
+            && request.resource.data.telefono.size() >= 7
+            && request.resource.data.telefono.size() <= 20));
+    }
+
+    match /usuarios/{userId}/movimientos/{movimientoId} {
+      allow read: if request.auth != null
+        && (request.auth.uid == userId || isAdmin());
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly([
+          'monto',
+          'categoria',
+          'descripcion',
+          'fecha'
+        ])
+        && request.resource.data.monto is number
+        && request.resource.data.monto > 0
+        && request.resource.data.categoria in [
+          'ingresos',
+          'gastos',
+          'ahorro',
+          'inversion'
+        ]
+        && request.resource.data.descripcion is string
+        && request.resource.data.fecha == request.time;
+    }
+
+    match /usuarios/{userId}/pagos/{pagoId} {
+      allow read: if request.auth != null
+        && request.auth.uid == userId;
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'titulo',
+          'monto',
+          'monto_pagado',
+          'fecha_limite',
+          'estado',
+          'fecha_creacion'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.titulo is string
+        && request.resource.data.titulo.size() >= 2
+        && request.resource.data.titulo.size() <= 60
+        && request.resource.data.monto is number
+        && request.resource.data.monto > 0
+        && request.resource.data.monto <= 1000000000
+        && request.resource.data.monto_pagado == 0
+        && request.resource.data.fecha_limite is timestamp
+        && request.resource.data.estado == 'pendiente'
+        && request.resource.data.fecha_creacion == request.time;
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        && resource.data.uid == userId
+        && request.resource.data.uid == userId
+        && request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            'estado',
+            'monto_pagado',
+            'fecha_pago'
+          ])
+        && (
+          (
+            request.resource.data.estado == 'no_pagado'
+            && request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly(['estado'])
+          )
+          || (
+            resource.data.estado == 'pendiente'
+            && request.resource.data.monto_pagado is number
+            && request.resource.data.monto_pagado > resource.data.monto_pagado
+            && request.resource.data.monto_pagado <= resource.data.monto
+            && request.resource.data.fecha_pago == request.time
+            && (
+              (
+                request.resource.data.monto_pagado == resource.data.monto
+                && request.resource.data.estado == 'pagado'
+              )
+              || (
+                request.resource.data.monto_pagado < resource.data.monto
+                && request.resource.data.estado == 'pendiente'
+              )
+            )
+          )
+        );
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

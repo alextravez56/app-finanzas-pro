@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:universal_html/html.dart' as html;
 
 import 'firebase_options.dart';
 
@@ -2152,6 +2154,7 @@ class _DashboardFinanzasState extends State<DashboardFinanzas> {
   bool _cargandoMovimientos = true;
   String? _errorMovimientos;
   late final Stream<List<Pago>> _pagosStream;
+  final Set<String> _alertasMostradas = <String>{};
 
   double get _sobrante => salario - gastado - ahorrado - invertido;
 
@@ -2392,15 +2395,93 @@ class _DashboardFinanzasState extends State<DashboardFinanzas> {
               ..sort((a, b) => a.dias.compareTo(b.dias));
         if (pagosPendientes.isEmpty) return const SizedBox.shrink();
 
+        if (kIsWeb &&
+            html.Notification.supported &&
+            html.Notification.permission == 'granted') {
+          for (final item in pagosPendientes) {
+            if (_alertasMostradas.add(item.pago.id)) {
+              Future.microtask(() {
+                if (!mounted) return;
+                final mensaje = item.dias < 0
+                    ? '¡Atrasado! El pago de ${item.pago.titulo} ya venció.'
+                    : 'Faltan ${item.dias} día(s) para pagar: '
+                          '${item.pago.titulo}';
+                _mostrarNotificacionNativa('⚠️ Alerta de Pago', mensaje);
+              });
+            }
+          }
+        }
+
         return Column(
           key: const Key('payment_alerts'),
           children: [
+            if (kIsWeb &&
+                html.Notification.supported &&
+                html.Notification.permission != 'granted')
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  key: const Key('enable_native_payment_notifications'),
+                  onPressed: _activarNotificacionesNativas,
+                  icon: const Icon(Icons.notifications_active_outlined),
+                  label: const Text('Activar notificaciones'),
+                ),
+              ),
             for (final item in pagosPendientes)
               _tarjetaAlertaPago(item.pago, item.dias),
           ],
         );
       },
     );
+  }
+
+  Future<void> _activarNotificacionesNativas() async {
+    if (!kIsWeb || !html.Notification.supported) return;
+
+    try {
+      final permiso = html.Notification.permission == 'granted'
+          ? 'granted'
+          : await html.Notification.requestPermission();
+      if (!mounted) return;
+      if (permiso == 'granted') {
+        setState(() {});
+      } else {
+        _mostrarAvisoNotificaciones(
+          'Permite las notificaciones de este sitio en la configuración '
+          'del navegador.',
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        _mostrarAvisoNotificaciones(
+          'No se pudo activar las notificaciones: $error',
+        );
+      }
+    }
+  }
+
+  void _mostrarNotificacionNativa(String titulo, String mensaje) {
+    if (!kIsWeb ||
+        !html.Notification.supported ||
+        html.Notification.permission != 'granted') {
+      return;
+    }
+
+    try {
+      html.Notification(titulo, body: mensaje);
+    } catch (error) {
+      if (mounted) {
+        _mostrarAvisoNotificaciones(
+          'No se pudo mostrar la notificación: $error',
+        );
+      }
+    }
+  }
+
+  void _mostrarAvisoNotificaciones(String mensaje) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensaje)));
   }
 
   Widget _tarjetaAlertaPago(Pago pago, int dias) {
@@ -4647,6 +4728,8 @@ class _PantallaPagosState extends State<PantallaPagos> {
                     final monto = double.parse(
                       montoController.text.trim().replaceAll(',', '.'),
                     );
+                    final permisoNotificacion =
+                        _solicitarPermisoNotificacionNativa();
                     final exito = await _ejecutarAccion(
                       () async {
                         final confirmar = widget.confirmarPago;
@@ -4680,6 +4763,12 @@ class _PantallaPagosState extends State<PantallaPagos> {
                     );
                     if (exito && dialogContext.mounted) {
                       Navigator.of(dialogContext).pop();
+                      await _mostrarNotificacionNativa(
+                        '✅ Pago Confirmado',
+                        'Se registró tu pago de ${_formatearMoneda(monto)} '
+                            'para ${pago.titulo}.',
+                        permisoSolicitado: permisoNotificacion,
+                      );
                     }
                   },
             child: const Text('Confirmar abono'),
@@ -4789,6 +4878,55 @@ class _PantallaPagosState extends State<PantallaPagos> {
           duration: const Duration(seconds: 4),
         ),
       );
+  }
+
+  Future<String?> _solicitarPermisoNotificacionNativa() async {
+    if (!kIsWeb || !html.Notification.supported) return null;
+    if (html.Notification.permission == 'granted') return 'granted';
+
+    try {
+      return await html.Notification.requestPermission();
+    } catch (error) {
+      return 'error: $error';
+    }
+  }
+
+  Future<void> _mostrarNotificacionNativa(
+    String titulo,
+    String mensaje, {
+    required Future<String?> permisoSolicitado,
+  }) async {
+    if (!kIsWeb || !html.Notification.supported) return;
+
+    try {
+      final permiso = html.Notification.permission == 'granted'
+          ? 'granted'
+          : await permisoSolicitado;
+      if (permiso == 'granted') {
+        html.Notification(titulo, body: mensaje);
+      } else if (permiso?.startsWith('error:') ?? false) {
+        if (mounted) {
+          _mostrarAviso(
+            'Pago registrado, pero no se pudo solicitar permiso para '
+            'notificaciones: ${permiso!.substring('error: '.length)}',
+            error: true,
+          );
+        }
+      } else if (mounted) {
+        _mostrarAviso(
+          'Pago registrado. Para recibir notificaciones, '
+          'permítelas en la configuración de este sitio.',
+          error: true,
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        _mostrarAviso(
+          'Pago registrado, pero no se pudo mostrar la notificación: $error',
+          error: true,
+        );
+      }
+    }
   }
 }
 

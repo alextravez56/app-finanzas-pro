@@ -41,7 +41,8 @@ service cloud.firestore {
           'username',
           'email',
           'fecha_registro',
-          'telefono'
+          'telefono',
+          'rol'
         ])
         && (!request.resource.data.keys().hasAny(['telefono'])
           || (request.resource.data.telefono is string
@@ -70,6 +71,27 @@ service cloud.firestore {
         ]
         && request.resource.data.descripcion is string
         && request.resource.data.fecha == request.time;
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly([
+          'monto',
+          'categoria',
+          'descripcion',
+          'fecha'
+        ])
+        && request.resource.data.monto is number
+        && request.resource.data.monto > 0
+        && request.resource.data.categoria in [
+          'ingresos',
+          'gastos',
+          'ahorro',
+          'inversion'
+        ]
+        && request.resource.data.descripcion is string
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['fecha'])
+          || request.resource.data.fecha == request.time);
+      allow delete: if request.auth != null
+        && request.auth.uid == userId;
     }
 
     match /usuarios/{userId}/pagos/{pagoId} {
@@ -101,20 +123,16 @@ service cloud.firestore {
         && request.auth.uid == userId
         && resource.data.uid == userId
         && request.resource.data.uid == userId
-        && request.resource.data.diff(resource.data)
-          .affectedKeys().hasOnly([
-            'estado',
-            'monto_pagado',
-            'fecha_pago'
-          ])
         && (
           (
-            request.resource.data.estado == 'no_pagado'
+            request.resource.data.estado in ['pendiente', 'no_pagado']
             && request.resource.data.diff(resource.data)
               .affectedKeys().hasOnly(['estado'])
           )
           || (
-            resource.data.estado == 'pendiente'
+            resource.data.estado in ['pendiente', 'no_pagado']
+            && request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly(['estado', 'monto_pagado', 'fecha_pago'])
             && request.resource.data.monto_pagado is number
             && request.resource.data.monto_pagado > resource.data.monto_pagado
             && request.resource.data.monto_pagado <= resource.data.monto
@@ -130,7 +148,23 @@ service cloud.firestore {
               )
             )
           )
+          || (
+            request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly(['titulo', 'monto', 'estado', 'fecha_limite'])
+            && request.resource.data.titulo is string
+            && request.resource.data.titulo.size() >= 2
+            && request.resource.data.titulo.size() <= 60
+            && request.resource.data.monto is number
+            && request.resource.data.monto >= resource.data.monto_pagado
+            && request.resource.data.monto <= 1000000000
+            && request.resource.data.fecha_limite is timestamp
+            && request.resource.data.estado in ['pendiente', 'pagado', 'no_pagado']
+            && request.resource.data.monto_pagado == resource.data.monto_pagado
+            && request.resource.data.fecha_creacion == resource.data.fecha_creacion
+          )
         );
+      allow delete: if request.auth != null
+        && request.auth.uid == userId;
     }
 
     match /{document=**} {
